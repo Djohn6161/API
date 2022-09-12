@@ -225,76 +225,224 @@ const eventRegistration = (req, res) => {
     //The requests from clients
     const {token} = req.query;
     const {ticket_id, session_id, } = req.body;
+    let ticket_array = JSON.parse(ticket_id); // makes the content of ticket_id into a JSON
     const {OrgSlug, EveSlug} = req.params
     const date = new Date();
-    const current_date = date.getFullYear()+"-"+(date.getMonth()+1)+"-"+ date.getDate()+" "+date.getHours()+":"+date.getMinutes()+":"+ date.getSeconds();
+    const currentDateAndTime = date.getFullYear()+"-"+(date.getMonth()+1)+"-"+ date.getDate()+" "+date.getHours() + ":" + date.getMinutes() + ":" + date.getSeconds();
+    const current_date = date.getFullYear()+"-"+(date.getMonth()+1)+"-"+ date.getDate();
+
+    let message;
+    let condition;
 
     //test if it contain
     console.log(`These are the params for organizer slug ${OrgSlug} and event${EveSlug}`);
     console.log(`These are the request in Body: ticket_id=${ticket_id} and session_id= ${session_id}`);
-    console.log(`This is the Authprization token: ${token}`);
+    console.log(`This is the Authorization token: ${token}`);
 
     //Queries
     const getEvent = `SELECT * FROM events, organizers
                     WHERE events.organizer_id = organizers.id
                     AND events.slug = '${EveSlug}' AND organizers.slug = '${OrgSlug}'`;
-    const checkToken = `SELECT * FROM attendees WHERE login_token = '${token}'`;
-    const checkEventRegistration = `SELECT events.name as event_name, CONCAT(attendees.lastname, ', ', attendees.firstname) as attendee_fullname
-                    FROM attendees, registrations, event_tickets, events
-                    WHERE attendees.id = registrations.id 
-                    AND registrations.ticket_id = event_tickets.id
-                    AND event_tickets.event_id = events.id 
-                    AND events.slug = 'wsc-2019'
-                    AND attendees.login_token = 'AUTHORIZATION_TOKEN'`;
-    const stirngValidity = [];
-    const jsonValidity = [];
-    let filteredValidity;
-    let flag = false;
-    console.log(ticket_id);
-    for (let i = 0; i < ticket_id.length; i++) {
-        if (flag===true) break;
-        const checkValidity = `SELECT special_validity FROM event_tickets WHERE id = '${ticket_id[0]}'`;
-        Query(checkValidity, (error, validities)=> {
+    const checkToken = `SELECT * FROM attendees WHERE login_token = '${token}';`;
+    let checkEventRegistration = `SELECT events.name as event_name, CONCAT(attendees.lastname, ', ', attendees.firstname) as attendee_fullname, event_tickets.name
+                    FROM attendees JOIN registrations ON attendees.id = registrations.attendee_id 
+                    JOIN event_tickets ON registrations.ticket_id = event_tickets.id 
+                    JOIN events ON event_tickets.event_id = events.id`;
+    for (let i = 0; i < ticket_array.length; i++) {
+        // console.log(ticket_array.length);
+        if(i==0){
+            condition = `
+                        WHERE events.slug = '${EveSlug}'
+                        AND attendees.login_token = '${token}'
+                        AND event_tickets.id = '${ticket_array[i]}'`;
+        }else if(i==ticket_array.length-1){
+            condition = ` OR events.slug = '${EveSlug}'
+                        AND attendees.login_token = '${token}'
+                        AND event_tickets.id = '${ticket_array[i]}'`;
+                        console.log('2');
+        } else {
+            condition = ` OR events.slug = '${EveSlug}'
+                        AND attendees.login_token = '${token}'
+                        AND event_tickets.id = '${ticket_array[i]}'`;
+                        console.log('3');
+        }
+        checkEventRegistration = checkEventRegistration + condition;
+    }
+    checkEventRegistration = checkEventRegistration + ';';
+    //* makes a query that has the variables in the array of ticket id
+    let checkValidity = 'SELECT * FROM EVENT_TICKETS'
+    for (let i = 0; i < ticket_array.length; i++) {
+        if(i==0){
+            condition = ` WHERE event_tickets.id = ${ticket_array[i]}`
+        } else {
+            condition = ` OR event_tickets.id = ${ticket_array[i]}`
+        }
+        checkValidity = checkValidity + condition;
+    }
+    // console.log(checkEventRegistration);
+    //*Check if user is not log in
+    if(!token){
+        message = {"message": "User not logged in"}
+        console.log(message);
+        res.status(401).json(message);
+    }else {
+        Query(checkToken +'\n'+ checkEventRegistration +'\n'+ checkValidity, (error, registration) => {
             if(error){
                 console.log(error);
-                res.send(error);
-                flag=true;
-                console.log("true");
-            } else {
-                // variable containers
-                
-                console.log("false ", validities);
-                // convets the special validities array of objects into an array
-                validities.map(validity => {
-                    if(validity.special_validity!==null){
-                        stirngValidity.push(validity.special_validity)
+                res.json(error);
+            }else {
+                const attendee = registration[0];
+                const events = registration[1];
+                const Validity = registration[2];
+    
+                //* Check if Token is valid
+                if(attendee.length===0){
+                    console.log('attendee is', attendee);
+                    message = {"message": "User not logged in"}
+                    console.log(message);
+                    res.status(401).json(message);
+                }else{
+                    const attendeeID = attendee[0].id;
+                    if(events.length!==0){
+                        // console.log('events are ', events);
+                        message = {"message": "User Already registered"}
+                        console.log(message);
+                        res.status(401).json(message);
+                    }else{
+                        const jsonValidity = [];
+                        let filteredValidity;    
+                        Validity.map(validity => {
+                            if(validity.special_validity!==null){
+                                jsonValidity.push(JSON.parse(validity.special_validity))
+                            }
+                        })
+                        filteredValidity = jsonValidity.filter(validity => {return(validity.type === "date")})
+                        filteredValidity.map(validity => {
+                            //! if you want to check if inserting data is possible you should invert the next condition
+                            //! because it will always be true because the events are long time ago
+                            if(current_date<validity.date){
+                                message = {
+                                    "message": "Ticket is no longer available"
+                                };
+                            }
+                        })
+                        if(message){
+                            res.status(401).json(message)
+                        }else{
+                            let insertRegistration = `INSERT INTO registrations(attendee_id, ticket_id, registration_time)`;
+                            for (let i = 0; i < ticket_array.length; i++) {
+                                if(i==0){
+                                    condition = ` VALUES ('${attendeeID}', '${ticket_array[i]}', '${currentDateAndTime}')`
+                                } else {
+                                    condition = `, ('${attendeeID}', '${ticket_array[i]}', '${currentDateAndTime}')`
+                                }
+                                insertRegistration = insertRegistration + condition;
+                            }    
+                            insertRegistration = insertRegistration + ';';
+                            let insertSessionRegistration = ` INSERT INTO session_registrations(registration_id, session_id) 
+                            SELECT registrations.id, sessions.id FROM registrations, sessions WHERE registrations.registration_time = '${currentDateAndTime}' AND sessions.id = ${session_id}`;
+                            console.log(insertRegistration + insertSessionRegistration);
+                            Query(insertRegistration + insertSessionRegistration, (error, status)=> {
+                                if(error){
+                                    console.log(error);
+                                    res.json(error)
+                                }else {
+                                    message = {
+                                        "message": "Registration Successful" 
+                                    };
+
+                                    res.status(200).json(message)
+                                    console.log(message);
+                                }
+                            })
+                        }
                     }
-                })
-
-                // converts the special validities that are string into json
-                stirngValidity.map(validity => {
-                    jsonValidity.push(JSON.parse(validity))
-                })
-
-                //filter the JSON file with type that are date
-                filteredValidity = jsonValidity.filter(validity => {return(validity.type === "date")})
-                res.status(401).json(filteredValidity);
-                // if(current_date < filteredValidity[0].date){
-                //     res.status(401).JSON({"message": "Ticket is no longer available"});
-                // }
+                }
             }
         })
     }
-    
-    // res.send(`this is the params ${EveSlug}`)
-    // const 
-        // res.send(`this is the params ${EveSlug}`)
 }
+const getRegistration = (req, res) => {
+    const {token} = req.query;
+    const query = `SELECT events.id as event_id, events.name as event_name, events.slug events_slug, events.date as event_date, organizers.id as organizer_id, organizers.name as organizer_name, organizers.slug as organizer_slug, sessions.id as session_id
+    FROM events JOIN organizers on organizers.id = events.organizer_id 
+    JOIN event_tickets on events.id = event_tickets.event_id
+    JOIN registrations on event_tickets.id = registrations.ticket_id
+    JOIN attendees on registrations.attendee_id = attendees.id
+    JOIN session_registrations on registrations.id = session_registrations.registration_id
+    JOIN sessions on session_registrations.session_id = sessions.id
+    WHERE attendees.login_token = '${token}'`
+    console.log(token);
+    Query(query, (error, registrations) => {
+        if(error){
+            console.log(error);
+            res.send(error);
+        }else {
+            // console.log(query);
+            if(registrations.length === 0){
+                let message = {
+                    'message': 'user not logged in'
+                }
+                console.log('the contents of registration is ', registrations);
+                res.status(401).json(message);
+            }else{
+                let sessions = [];
+                registrations.map(registration => {
+                    sessions.push(registration.session_id)
+                    sessions.push(registration.organizer_id)
+                })
+                const organizers = registrations.map(registration => {
+                    let session = [];
+                    for(let i = 0; i<sessions.length; i++){
+                        if(i % 2 !== 0){
+                            if(registration.organizer_id === sessions[i]){
+                                session.push(sessions[i-1])
+                            }
+                        }
+                    }
+                    return {
+                        event_id: registration.event_id,
+                        id: registration.organizer_id,
+                        name: registration.organizer_name,
+                        session_ids: session
+                    }
+                })
+                // const F_organizers = removeDuplicates(organizers)
+                // console.log("organizers are ", organizers);
+                const events = registrations.map(registration => {
+                    let organizer;
+                    for(let i=0;i<organizers.length;i++){
+                        if(organizers[i].event_id == registration.event_id){
+                            organizer = organizers[i];
+                        }
+                    }
+                    delete organizer.event_id;
+                    console.log("organizers are ", organizer);
+                    return{
+                        id: registration.event_id,
+                        name: registration.event_name,
+                        slug: registration.event_slug,
+                        date: registration.events_date,
+                        organizer: organizer
+                    }
+                })
+                
+                const F_events = removeDuplicates(events);
+                // const organizers = registration.map
+                // console.log(F_events);
+                res.status(200).json(F_events);
+            }
+            
+        }
+    })
+}
+
 
 module.exports = {
     getEvents,
     getEventBySlug,
     attendeelogin,
     attendeelogout,
-    eventRegistration
+    eventRegistration,
+    getRegistration
 }

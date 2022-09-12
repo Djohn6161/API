@@ -4,7 +4,8 @@ const dbConn = mysql.createConnection({
     host: 'localhost',
     user: 'root',
     password: '',
-    database: 'db01_competitor_day2'
+    database: 'db01_competitor_day2',
+    multipleStatements: 'true'
 });
 
 dbConn.connect(function(error){
